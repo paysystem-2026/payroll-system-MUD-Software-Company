@@ -1,0 +1,72 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "Payroll System",
+  "version": "1.0.0",
+  "identifier": "com.payroll.system",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Payroll System",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "createUpdaterArtifacts": true,
+    "publisher": "MUD Software Company",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "minimumWebview2Version": "110.0.1531.0",
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "installer/payroll-system.ico",
+        "headerImage": "installer/header-image.bmp",
+        "sidebarImage": "installer/sidebar-image.bmp",
+        "uninstallerIcon": "installer/payroll-system.ico",
+        "uninstallerHeaderImage": "installer/header-image.bmp",
+        "languages": [
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "MUD Software Company"
+      }
+    },
+    "resources": [
+      "installer/background-installer-image.bmp"
+    ],
+    "linux": {
+      "appimage": {},
+      "deb": {},
+      "rpm": {}
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "untrusted comment: minisign public key: FD58345B80DD79A2\nRWSied2AWzRY/Sxs7ayCxj/W5npFPzSoH/oqshFlpoFdIo0BDd/ox7ql",
+      "endpoints": [
+        "https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
