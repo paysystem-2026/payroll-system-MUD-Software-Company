@@ -1,0 +1,124 @@
+name: Publish Payroll System
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'app-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: payroll-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            platform: ubuntu-22.04
+            args: ''
+            rust_targets: ''
+          - name: windows-x64
+            platform: windows-latest
+            args: ''
+            rust_targets: ''
+          - name: windows-x86
+            platform: windows-latest
+            args: '--target i686-pc-windows-msvc'
+            rust_targets: 'i686-pc-windows-msvc'
+
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Frontend build preflight
+        run: npm run build
+
+      - name: Publish Tauri release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PAYROLL_UPDATE_ENDPOINT: https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/latest/download/latest.json
+          PAYROLL_UPDATE_PUBKEY: dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZENTgzNDVCODBERDc5QTIKUldTaWVkMkFXelJZL1N4czdheUN4ai9XNW5wRlB6U29IL29xc2hGbHBvRmRJbzBCRGQvb3g3cWwK
+        with:
+          tagName: app-v__VERSION__
+          releaseName: Payroll System v__VERSION__
+          releaseBody: |
+            Payroll System signed desktop release.
+            Windows: x64 and x86 installers.
+            Linux: x64 AppImage, Debian and RPM packages.
+            The in-app Update module uses this GitHub Release as its signed update source.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+  verify-release:
+    name: Verify published release
+    needs: publish-tauri
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Verify latest.json is reachable
+        env:
+          UPDATE_URL: https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/latest/download/latest.json
+        run: |
+          curl --fail --location --retry 5 --retry-delay 3 "$UPDATE_URL" -o latest.json
+          test -s latest.json
+          python3 - <<'PY'
+          import json
+          with open("latest.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          assert isinstance(data, dict) and data, "latest.json is empty"
+          assert any(k in data for k in ("version", "platforms")), "latest.json does not look like a Tauri updater manifest"
+          print("latest.json verified")
+          PY
+
+      - name: Verify GitHub release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" \
+            --jq '.assets[].name' | tee release-assets.txt
+          grep -Ei '\.exe$' release-assets.txt
+          grep -Ei '\.(msi|deb|rpm|AppImage)$' release-assets.txt
+          grep -Ei '\.sig$' release-assets.txt
