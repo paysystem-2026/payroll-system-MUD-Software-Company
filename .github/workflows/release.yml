@@ -98,12 +98,22 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Verify latest.json is reachable
+      - name: Wait for release assets and verify latest.json
         env:
-          UPDATE_URL: https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/latest/download/latest.json
+          TAG_UPDATE_URL: https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/download/${{ github.ref_name }}/latest.json
         run: |
-          curl --fail --location --retry 5 --retry-delay 3 "$UPDATE_URL" -o latest.json
-          test -s latest.json
+          for attempt in {1..20}; do
+            echo "Checking release manifest (attempt $attempt/20)..."
+            if curl --fail --location --silent --show-error "$TAG_UPDATE_URL" -o latest.json; then
+              test -s latest.json
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "latest.json was not reachable after waiting for GitHub release propagation."
+              exit 1
+            fi
+            sleep 10
+          done
           python3 - <<'PY'
           import json
           with open("latest.json", "r", encoding="utf-8") as f:
@@ -119,6 +129,6 @@ jobs:
         run: |
           gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" \
             --jq '.assets[].name' | tee release-assets.txt
-          grep -Ei '\.exe$' release-assets.txt
-          grep -Ei '\.(msi|deb|rpm|AppImage)$' release-assets.txt
+          grep -Ei '\.(exe|msi)$' release-assets.txt
+          grep -Ei '\.(deb|rpm|AppImage)$' release-assets.txt
           grep -Ei '\.sig$' release-assets.txt
