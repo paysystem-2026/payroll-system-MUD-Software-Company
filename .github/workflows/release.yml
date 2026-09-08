@@ -98,23 +98,15 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Download latest.json using authenticated GitHub API
+      - name: Wait for release assets and verify latest.json
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_UPDATE_URL: https://github.com/paysystem-2026/payroll-system-MUD-Software-Company/releases/download/${{ github.ref_name }}/latest.json
         run: |
           for attempt in {1..20}; do
             echo "Checking release manifest (attempt $attempt/20)..."
-            RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq '.id' 2>/dev/null || true)
-            if [ -n "$RELEASE_ID" ]; then
-              ASSET_ID=$(gh api "repos/${{ github.repository }}/releases/${RELEASE_ID}/assets" --jq '.[] | select(.name=="latest.json") | .id' 2>/dev/null || true)
-              if [ -n "$ASSET_ID" ]; then
-                gh api \
-                  -H "Accept: application/octet-stream" \
-                  "repos/${{ github.repository }}/releases/assets/${ASSET_ID}" > latest.json
-                if test -s latest.json; then
-                  break
-                fi
-              fi
+            if curl --fail --location --silent --show-error "$TAG_UPDATE_URL" -o latest.json; then
+              test -s latest.json
+              break
             fi
             if [ "$attempt" -eq 20 ]; then
               echo "latest.json was not reachable after waiting for GitHub release propagation."

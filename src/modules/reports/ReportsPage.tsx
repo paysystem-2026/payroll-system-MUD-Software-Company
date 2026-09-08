@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
+import { PageSkeleton } from "@/components/ui/PageSkeleton";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { reportsService } from "@/services/reports";
@@ -301,7 +302,7 @@ export function ReportsPage() {
 // ── Summary cards ───────────────────────────────────────────────────
 
 function SummaryView({ summary, loading }: { summary: ReportSummary | null; loading: boolean }) {
-  if (loading && !summary) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !summary) return <PageSkeleton variant="report" />;
   if (!summary) return <EmptyState icon={BarChart3} title="No summary data" description="Report summary will appear here once data is available." />;
   const cards = [
     { label: "Total Employees", value: num(summary.total_employees), sub: `${summary.active_employees} active` },
@@ -368,7 +369,7 @@ function ReportKpis({ items }: { items: { label: string; value: string }[] }) {
 // ── Payroll report ──────────────────────────────────────────────────
 
 function PayrollView({ data, loading }: { data: ReportData<PayrollReportRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={FileText} title="No payroll data" description="Run payroll for a period to see it here." />;
   return (
     <div>
@@ -408,7 +409,7 @@ function PayrollView({ data, loading }: { data: ReportData<PayrollReportRow> | n
 // ── Payroll detail ──────────────────────────────────────────────────
 
 function DetailView({ data, loading }: { data: ReportData<PayrollDetailRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={Users} title="No detail records" description="Select a period and generate to see the Gorilla payroll register." />;
   const allowed=["BASIC","TRANSPORT","ACCOMMODATION","TAXABLE_BASE","PAYE","PENSION_EMP","PENSION_ER","PENSION_2","MATERNITY_EMP","MATERNITY_ER","CHBI","LOAN_DED","OTHER_DED"];
   const labels:Record<string,string>={BASIC:"Basic Salary",TRANSPORT:"Transport",ACCOMMODATION:"Accommodation",TAXABLE_BASE:"Taxable Base",PAYE:"PAYE",PENSION_EMP:"Employee Pension",PENSION_ER:"Employer Pension",PENSION_2:"Pension 2%",MATERNITY_EMP:"Maternity Employee",MATERNITY_ER:"Maternity Employer",CHBI:"CHBI",LOAN_DED:"Loan / Advance",OTHER_DED:"Other Deductions"};
@@ -420,7 +421,7 @@ function DetailView({ data, loading }: { data: ReportData<PayrollDetailRow> | nu
 // ── Staff report ────────────────────────────────────────────────────
 
 function StaffView({ data, loading }: { data: ReportData<StaffReportRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={Users} title="No staff records" description="Add employees to see them in this report." />;
   return (
     <div>
@@ -470,7 +471,7 @@ function StaffView({ data, loading }: { data: ReportData<StaffReportRow> | null;
 // ── Leave report ────────────────────────────────────────────────────
 
 function LeaveView({ data, loading }: { data: ReportData<LeaveReportRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={CalendarDays} title="No leave records" description="Leave requests will appear here once recorded." />;
   return (
     <div>
@@ -516,7 +517,7 @@ function LeaveView({ data, loading }: { data: ReportData<LeaveReportRow> | null;
 // ── Leave summary ───────────────────────────────────────────────────
 
 function LeaveSummaryView({ data, loading }: { data: ReportData<LeaveSummaryRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={CalendarDays} title="No leave balances" description="Leave balances will appear here once employees and leave types exist." />;
   return (
     <div>
@@ -559,7 +560,7 @@ function LeaveSummaryView({ data, loading }: { data: ReportData<LeaveSummaryRow>
 // ── Loan report ─────────────────────────────────────────────────────
 
 function LoanView({ data, loading }: { data: ReportData<LoanReportRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={Landmark} title="No loan records" description="Employee loans will appear here once recorded." />;
   return (
     <div>
@@ -601,7 +602,7 @@ function LoanView({ data, loading }: { data: ReportData<LoanReportRow> | null; l
 // ── Cumulative report ──────────────────────────────────────────────
 
 function CumulativeView({ data, loading }: { data: ReportData<CumulativeReportRow> | null; loading: boolean }) {
-  if (loading && !data) return <Card className="p-12 text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-[#4a8b3f]" /></Card>;
+  if (loading && !data) return <PageSkeleton variant="report" />;
   if (!data || data.rows.length === 0) return <EmptyState icon={TrendingUp} title="No cumulative data" description="Run payroll across multiple periods to see trends." />;
   return (
     <div>

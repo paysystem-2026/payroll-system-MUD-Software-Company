@@ -1,3 +1,4 @@
+import { PageSkeleton } from "@/components/ui/PageSkeleton";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -164,7 +165,7 @@ export function BasicDataPage() {
       </div>
 
       {loading ? (
-        <Card className="p-10 text-center text-[13px] text-[#888]">Loading basic data…</Card>
+        <PageSkeleton variant="form" />
       ) : tab === "company" ? (
         <Card className="basic-data-panel p-6">
           <SectionTitle icon={Building2} title="Company profile" subtitle="Keep the organization details used across payroll and reports." />

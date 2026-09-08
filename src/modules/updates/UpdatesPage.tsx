@@ -1,3 +1,4 @@
+import { PageSkeleton } from "@/components/ui/PageSkeleton";
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -72,7 +73,7 @@ export function UpdatesPage() {
   };
 
   if (!data) {
-    return <div className="p-6"><PageHeader title="Updates" description="Secure application updates, verification and installation." /><Card className="p-10 text-center"><RefreshCw className="mx-auto h-6 w-6 animate-spin text-[#4a8b3f]" /><p className="mt-3 text-xs text-[#777]">Loading update service…</p></Card></div>;
+    return <div className="p-6"><PageHeader title="Updates" description="Secure application updates, verification and installation." /><PageSkeleton variant="dashboard" /></div>;
   }
 
   const { status, history } = data;

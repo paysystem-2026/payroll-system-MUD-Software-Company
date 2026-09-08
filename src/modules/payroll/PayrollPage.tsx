@@ -3,6 +3,7 @@ import { Banknote, Calculator, CheckCircle2, FileText, FlaskConical, History, La
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { PageSkeleton } from "@/components/ui/PageSkeleton";
 import { payrollService } from "@/services/payroll";
 import type { Loan, PayrollPeriod, PayrollRecord, PayrollRule, Payslip } from "@/types/payroll";
 import { RuleTable } from "@/components/payroll/RuleTable";
@@ -31,6 +32,7 @@ export function PayrollPage() {
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState("");
   const [success,setSuccess] = useState("");
+  const [loading,setLoading] = useState(true);
 
   const [editingRule,setEditingRule] = useState<PayrollRule|null>(null);
   const [showRuleModal,setShowRuleModal] = useState(false);
@@ -41,6 +43,7 @@ export function PayrollPage() {
 
   const loadAll = useCallback(async () => {
     setError("");
+    setLoading(true);
     try {
       const [periodRows,loanRows,payslipRows,ruleRows,employeeRows] = await Promise.all([
         payrollService.getPeriods(), payrollService.getLoans(), payrollService.getPayslips(), payrollService.getRules(), staffService.getEmployees(),
@@ -50,6 +53,7 @@ export function PayrollPage() {
       setSelectedPeriodId(nextId);
       if(nextId) setRecords(await payrollService.getRecords(nextId)); else setRecords([]);
     } catch(e) { setError(e instanceof Error?e.message:String(e)); }
+    finally { setLoading(false); }
   },[selectedPeriodId]);
 
   useEffect(()=>{ void loadAll(); },[loadAll]);
@@ -74,6 +78,7 @@ export function PayrollPage() {
   return (
     <div className="space-y-3 animate-[fade-in_.25s_ease-out]">
       <PageHeader title="Payments / Payroll" description="Prepare, calculate, review and finalize payroll with frozen, traceable results." />
+      {loading ? <PageSkeleton variant="table" /> : <>
       {!(typeof window !== "undefined" && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)) && (
         <div className="flex items-start gap-3 rounded-xl border border-[#4a8b3f]/25 bg-[#4a8b3f]/8 px-4 py-3 text-sm text-[#e8e8e8] shadow-[0_8px_24px_rgba(0,0,0,0.14)]">
           <div className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-[#4a8b3f] shadow-[0_0_12px_rgba(74,139,63,0.55)]" />
@@ -113,6 +118,7 @@ export function PayrollPage() {
       {tab==="loans" && <LoansPanel loans={loans} employees={employees} onSaved={loadAll} />}
       {tab==="payslips" && <PayslipPanel payslips={payslips} periods={periods} />}
       {tab==="configuration" && <ConfigurationPanel rules={rules} setRules={setRules} editingRule={editingRule} setEditingRule={setEditingRule} showModal={showRuleModal} setShowModal={setShowRuleModal} showVersions={showVersions} setShowVersions={setShowVersions} versionRuleId={versionRuleId} setVersionRuleId={setVersionRuleId} />}
+      </>}
     </div>
   );
 }

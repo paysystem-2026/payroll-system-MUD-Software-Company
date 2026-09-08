@@ -1,3 +1,4 @@
+import { InlineSkeleton } from "@/components/ui/PageSkeleton";
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
@@ -194,7 +195,7 @@ export function StaffPage() {
       </div>
 
       {loading ? (
-        <Card><div className="py-12 text-center text-[13px] text-[#888888]">Loading...</div></Card>
+        <InlineSkeleton rows={7} />
       ) : paged.length === 0 ? (
         <Card>
           <div className="py-12 text-center">

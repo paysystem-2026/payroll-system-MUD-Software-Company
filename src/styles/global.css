@@ -373,3 +373,17 @@ html, body { overflow: hidden; overscroll-behavior: none; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
 }
+
+
+/* Fast, quiet skeletons: show the page shell while its data arrives. */
+.skeleton, .skeleton-card {
+  background: linear-gradient(90deg, rgba(255,255,255,.045) 25%, rgba(255,255,255,.085) 50%, rgba(255,255,255,.045) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.15s ease-in-out infinite;
+}
+.skeleton-card { border: 1px solid #242424; border-radius: 16px; }
+@keyframes skeleton-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton, .skeleton-card { animation: none; } }
+.app-titlebar-drag { flex: 1; align-self: stretch; min-width: 0; cursor: default; }
+.window-controls { position: relative; z-index: 10; }
+.window-control { position: relative; z-index: 11; pointer-events: auto; user-select: none; }

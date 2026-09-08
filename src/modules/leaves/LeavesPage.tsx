@@ -13,6 +13,7 @@ import {
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { InlineSkeleton } from "@/components/ui/PageSkeleton";
 import { leaveService, type LeaveBalance, type LeaveRecord, type LeaveType } from "@/types/leaves";
 import { staffService } from "@/services/staff";
 import type { Employee } from "@/types/staff";
@@ -35,9 +36,11 @@ export function LeavesPage() {
   const [editingType, setEditingType] = useState<LeaveType | null>(null);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setError("");
+    setLoading(true);
     try {
       const [leaveTypes, leaveRecords, leaveBalances, staff] = await Promise.all([
         leaveService.getTypes(),
@@ -51,6 +54,8 @@ export function LeavesPage() {
       setEmployees(staff);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -95,6 +100,7 @@ export function LeavesPage() {
         title="Leaves"
         description="Manage leave types, employee requests, approvals, history, and yearly balances."
       />
+      {loading ? <InlineSkeleton rows={6} /> : <>
 
       <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
         <SummaryCard icon={CalendarDays} label="Leave types" value={types.length} />
@@ -210,6 +216,7 @@ export function LeavesPage() {
           }}
         />
       )}
+      </>}
     </div>
   );
 }
