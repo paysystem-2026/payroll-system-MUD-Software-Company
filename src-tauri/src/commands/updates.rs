@@ -204,7 +204,7 @@ fn metadata(update: &tauri_plugin_updater::Update) -> UpdateMetadata {
             .and_then(|target| target.get("size"))
             .and_then(|v| v.as_u64())
     });
-    let compatible = tauri_plugin_updater::target().map(|expected| update.target == expected).unwrap_or(false);
+    let compatible = update.target == std::env::consts::OS;
     UpdateMetadata {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
