@@ -591,6 +591,74 @@ pub fn delete_payroll_period(db: State<Database>, period_id: i64) -> PayrollPeri
     }
 }
 
+#[tauri::command]
+pub fn delete_payroll_history(db: State<Database>, period_id: i64) -> PayrollPeriodResponse {
+    let mut conn = db.conn.lock().unwrap();
+    let status: String = match conn.query_row("SELECT status FROM payroll_periods WHERE id=?1", [period_id], |r| r.get(0)) {
+        Ok(v) => v,
+        Err(_) => return PayrollPeriodResponse { success:false, message:"Payroll history was not found.".into(), id:Some(period_id) },
+    };
+    if status != "closed" && status != "locked" {
+        return PayrollPeriodResponse { success:false, message:"Only finalized payroll history can be deleted here.".into(), id:Some(period_id) };
+    }
+    let tx = match conn.transaction() {
+        Ok(v) => v,
+        Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(period_id) },
+    };
+    let loan_ids: Vec<i64> = match tx.prepare("SELECT DISTINCT loan_id FROM loan_payments WHERE payroll_record_id IN (SELECT id FROM payroll_records WHERE period_id=?1)") {
+        Ok(mut stmt) => stmt.query_map([period_id], |r| r.get(0)).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+        Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(period_id) },
+    };
+    let result: Result<(), rusqlite::Error> = (|| {
+        tx.execute("DELETE FROM payslips WHERE period_id=?1", [period_id])?;
+        tx.execute("DELETE FROM loan_payments WHERE payroll_record_id IN (SELECT id FROM payroll_records WHERE period_id=?1)", [period_id])?;
+        tx.execute("DELETE FROM payroll_items WHERE payroll_record_id IN (SELECT id FROM payroll_records WHERE period_id=?1)", [period_id])?;
+        tx.execute("DELETE FROM payroll_records WHERE period_id=?1", [period_id])?;
+        tx.execute("DELETE FROM payroll_periods WHERE id=?1 AND status IN ('closed','locked')", [period_id])?;
+        for loan_id in &loan_ids {
+            tx.execute("UPDATE loans SET paid_installments=(SELECT COUNT(*) FROM loan_payments WHERE loan_id=?1), status=CASE WHEN status='cancelled' THEN 'cancelled' WHEN (SELECT COUNT(*) FROM loan_payments WHERE loan_id=?1)>=total_installments THEN 'paid' ELSE 'active' END, updated_at=datetime('now') WHERE id=?1", [loan_id])?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        return PayrollPeriodResponse { success:false, message:format!("Unable to delete payroll history: {e}"), id:Some(period_id) };
+    }
+    audit::log(&tx, "payroll_history_deleted", Some("payroll_periods"), Some(period_id), Some("Finalized payroll history, frozen records, payslips and linked loan payments deleted"));
+    if let Err(e) = tx.commit() {
+        return PayrollPeriodResponse { success:false, message:format!("Unable to commit payroll history deletion: {e}"), id:Some(period_id) };
+    }
+    PayrollPeriodResponse { success:true, message:"Payroll history deleted and linked loan balances restored.".into(), id:Some(period_id) }
+}
+
+#[tauri::command]
+pub fn clear_payroll_history(db: State<Database>) -> PayrollPeriodResponse {
+    let mut conn = db.conn.lock().unwrap();
+    let tx = match conn.transaction() {
+        Ok(v) => v,
+        Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:None },
+    };
+    let loan_ids: Vec<i64> = match tx.prepare("SELECT DISTINCT loan_id FROM loan_payments WHERE payroll_record_id IN (SELECT r.id FROM payroll_records r JOIN payroll_periods p ON p.id=r.period_id WHERE p.status IN ('closed','locked'))") {
+        Ok(mut stmt) => stmt.query_map([], |r| r.get(0)).ok().map(|rows| rows.filter_map(|r| r.ok()).collect()).unwrap_or_default(),
+        Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:None },
+    };
+    let period_count: i64 = tx.query_row("SELECT COUNT(*) FROM payroll_periods WHERE status IN ('closed','locked')", [], |r| r.get(0)).unwrap_or(0);
+    let result: Result<i64, rusqlite::Error> = (|| {
+        tx.execute("DELETE FROM payslips WHERE period_id IN (SELECT id FROM payroll_periods WHERE status IN ('closed','locked'))", [])?;
+        tx.execute("DELETE FROM loan_payments WHERE payroll_record_id IN (SELECT r.id FROM payroll_records r JOIN payroll_periods p ON p.id=r.period_id WHERE p.status IN ('closed','locked'))", [])?;
+        tx.execute("DELETE FROM payroll_items WHERE payroll_record_id IN (SELECT r.id FROM payroll_records r JOIN payroll_periods p ON p.id=r.period_id WHERE p.status IN ('closed','locked'))", [])?;
+        tx.execute("DELETE FROM payroll_records WHERE period_id IN (SELECT id FROM payroll_periods WHERE status IN ('closed','locked'))", [])?;
+        tx.execute("DELETE FROM payroll_periods WHERE status IN ('closed','locked')", [])?;
+        for loan_id in &loan_ids {
+            tx.execute("UPDATE loans SET paid_installments=(SELECT COUNT(*) FROM loan_payments WHERE loan_id=?1), status=CASE WHEN status='cancelled' THEN 'cancelled' WHEN (SELECT COUNT(*) FROM loan_payments WHERE loan_id=?1)>=total_installments THEN 'paid' ELSE 'active' END, updated_at=datetime('now') WHERE id=?1", [loan_id])?;
+        }
+        Ok(period_count)
+    })();
+    let deleted = match result { Ok(v) => v, Err(e) => return PayrollPeriodResponse { success:false, message:format!("Unable to clear payroll history: {e}"), id:None } };
+    audit::log(&tx, "payroll_history_cleared", Some("payroll_periods"), None, Some(&format!("Finalized payroll history cleared; {deleted} periods removed")));
+    if let Err(e) = tx.commit() { return PayrollPeriodResponse { success:false, message:format!("Unable to commit payroll history deletion: {e}"), id:None }; }
+    PayrollPeriodResponse { success:true, message:format!("All finalized payroll history cleared: {deleted} periods removed."), id:None }
+}
+
 fn active_rules(conn: &rusqlite::Connection) -> Result<Vec<PayrollRule>, String> {
     let mut stmt = conn.prepare("SELECT * FROM payroll_rules WHERE is_active=1 ORDER BY sort_order ASC").map_err(|e| e.to_string())?;
     let rules: Vec<PayrollRule> = stmt.query_map([], row_to_rule).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
@@ -888,6 +956,31 @@ pub fn save_loan(db: State<Database>, request: LoanRequest) -> PayrollPeriodResp
     let conn=db.conn.lock().unwrap();
     let result=match request.id{Some(id)=>conn.execute("UPDATE loans SET employee_id=?1,principal=?2,interest_rate=?3,total_amount=?4,installment_amount=?5,total_installments=?6,start_date=?7,updated_at=datetime('now') WHERE id=?8",params![request.employee_id,request.principal,request.interest_rate,request.total_amount,request.installment_amount,request.total_installments,request.start_date,id]).map(|_|id),None=>conn.execute("INSERT INTO loans(employee_id,principal,interest_rate,total_amount,installment_amount,total_installments,start_date,status) VALUES(?1,?2,?3,?4,?5,?6,?7,'active')",params![request.employee_id,request.principal,request.interest_rate,request.total_amount,request.installment_amount,request.total_installments,request.start_date]).map(|_|conn.last_insert_rowid())};
     match result{Ok(id)=>{audit::log(&conn,if request.id.is_some(){"loan_updated"}else{"loan_created"},Some("loans"),Some(id),Some("Loan / advance saved"));PayrollPeriodResponse{success:true,message:"Loan saved.".into(),id:Some(id)}},Err(e)=>PayrollPeriodResponse{success:false,message:e.to_string(),id:None}}
+}
+
+#[tauri::command]
+pub fn delete_loan(db: State<Database>, loan_id: i64) -> PayrollPeriodResponse {
+    let conn = db.conn.lock().unwrap();
+    let exists: i64 = conn.query_row("SELECT COUNT(*) FROM loans WHERE id=?1", [loan_id], |r| r.get(0)).unwrap_or(0);
+    if exists == 0 { return PayrollPeriodResponse { success:false, message:"Loan / advance was not found.".into(), id:Some(loan_id) }; }
+    let tx = match conn.unchecked_transaction() { Ok(v) => v, Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(loan_id) } };
+    if let Err(e) = tx.execute("DELETE FROM loan_payments WHERE loan_id=?1", [loan_id]) { return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(loan_id) }; }
+    if let Err(e) = tx.execute("DELETE FROM loans WHERE id=?1", [loan_id]) { return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(loan_id) }; }
+    audit::log(&tx, "loan_deleted", Some("loans"), Some(loan_id), Some("Loan / advance and its payment history deleted"));
+    if let Err(e) = tx.commit() { return PayrollPeriodResponse { success:false, message:e.to_string(), id:Some(loan_id) }; }
+    PayrollPeriodResponse { success:true, message:"Loan / advance deleted.".into(), id:Some(loan_id) }
+}
+
+#[tauri::command]
+pub fn clear_loans(db: State<Database>) -> PayrollPeriodResponse {
+    let conn = db.conn.lock().unwrap();
+    let tx = match conn.unchecked_transaction() { Ok(v) => v, Err(e) => return PayrollPeriodResponse { success:false, message:e.to_string(), id:None } };
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM loans", [], |r| r.get(0)).unwrap_or(0);
+    if let Err(e) = tx.execute("DELETE FROM loan_payments", []) { return PayrollPeriodResponse { success:false, message:e.to_string(), id:None }; }
+    if let Err(e) = tx.execute("DELETE FROM loans", []) { return PayrollPeriodResponse { success:false, message:e.to_string(), id:None }; }
+    audit::log(&tx, "loans_cleared", Some("loans"), None, Some(&format!("All loans / advances deleted; {count} records removed")));
+    if let Err(e) = tx.commit() { return PayrollPeriodResponse { success:false, message:e.to_string(), id:None }; }
+    PayrollPeriodResponse { success:true, message:format!("All loans / advances deleted: {count} records removed."), id:None }
 }
 
 #[tauri::command]

@@ -325,19 +325,68 @@ pub fn send_backup(conn: &Connection, local_id: &str, device_id: &str, backup_id
     Ok(())
 }
 
+fn local_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() => Some(ip),
+        _ => None,
+    }
+}
+
+fn subnet_broadcast(ip: Ipv4Addr) -> Ipv4Addr {
+    let octets = ip.octets();
+    Ipv4Addr::new(octets[0], octets[1], octets[2], 255)
+}
+
+fn add_discovery_target(targets: &mut Vec<Ipv4Addr>, ip: Ipv4Addr) {
+    if ip.is_loopback() || ip.is_multicast() { return; }
+    if !targets.contains(&ip) { targets.push(ip); }
+}
+
 pub fn discover(identity: &(String, String)) -> Result<Vec<LanDevice>, String> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|e| format!("LAN discovery failed: {e}"))?;
     socket.set_broadcast(true).map_err(|e| format!("LAN discovery failed: {e}"))?;
-    socket.set_read_timeout(Some(Duration::from_millis(650))).map_err(|e| e.to_string())?;
-    socket.send_to(b"PAYROLL_DISCOVER_V1", SocketAddrV4::new(Ipv4Addr::BROADCAST, DISCOVERY_PORT)).map_err(|e| format!("Unable to search the local network: {e}"))?;
-    let started = Instant::now(); let mut found = Vec::new(); let mut buffer = [0u8; 1024];
-    while started.elapsed() < Duration::from_millis(900) {
+    socket.set_read_timeout(Some(Duration::from_millis(250))).map_err(|e| e.to_string())?;
+
+    // Broadcast discovery is real UDP LAN discovery. Some routers/VLANs/firewalls
+    // block 255.255.255.255, so also probe the local /24 directed broadcast and,
+    // when necessary, each host in that /24. This keeps discovery reliable on
+    // ordinary office/home networks without introducing a fake device registry.
+    let mut targets = vec![Ipv4Addr::BROADCAST];
+    if let Some(local_ip) = local_ipv4() {
+        add_discovery_target(&mut targets, subnet_broadcast(local_ip));
+        let o = local_ip.octets();
+        for host in 1u8..=254u8 {
+            let candidate = Ipv4Addr::new(o[0], o[1], o[2], host);
+            if candidate != local_ip { add_discovery_target(&mut targets, candidate); }
+        }
+    }
+    for target in &targets {
+        let _ = socket.send_to(b"PAYROLL_DISCOVER_V1", SocketAddrV4::new(*target, DISCOVERY_PORT));
+    }
+
+    let started = Instant::now();
+    let mut found = Vec::new();
+    let mut buffer = [0u8; 2048];
+    while started.elapsed() < Duration::from_secs(2) {
         match socket.recv_from(&mut buffer) {
-            Ok((size, peer)) => { let ip = match peer.ip() { std::net::IpAddr::V4(v4) => v4, _ => continue }; if let Ok(message) = std::str::from_utf8(&buffer[..size]) { if let Some(device) = decode_hello(message, ip) { if device.device_id != identity.0 && !found.iter().any(|d: &LanDevice| d.device_id == device.device_id) { found.push(device); } } } }
+            Ok((size, peer)) => {
+                let ip = match peer.ip() { std::net::IpAddr::V4(v4) => v4, _ => continue };
+                if let Ok(message) = std::str::from_utf8(&buffer[..size]) {
+                    if let Some(device) = decode_hello(message, ip) {
+                        if device.device_id != identity.0 && !found.iter().any(|d: &LanDevice| d.device_id == device.device_id) {
+                            found.push(device);
+                        }
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(_) => break,
         }
     }
-    found.sort_by(|a,b| a.device_name.to_lowercase().cmp(&b.device_name.to_lowercase())); Ok(found)
+    found.sort_by(|a,b| a.device_name.to_lowercase().cmp(&b.device_name.to_lowercase()));
+    Ok(found)
 }
 
 pub fn create_pairing_request(identity: &(String,String), device: &LanDevice) -> Result<(String,String), String> {
