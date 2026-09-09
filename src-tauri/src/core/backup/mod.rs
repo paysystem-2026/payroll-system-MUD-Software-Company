@@ -2,7 +2,7 @@ mod engine;
 mod retention;
 mod scheduler;
 
-pub use engine::{backup_settings, create_backup, default_backup_dir, delete_backup, import_lan_backup, restore_backup, restore_backup_file, verify_backup};
+pub use engine::{backup_settings, create_backup, default_backup_dir, delete_backup, import_lan_backup, read_lan_payload, restore_backup, restore_backup_file, store_lan_received_payload, verify_backup};
 pub use scheduler::start_scheduler;
 
 pub const DEFAULT_BACKUP_FREQUENCY: &str = "daily";

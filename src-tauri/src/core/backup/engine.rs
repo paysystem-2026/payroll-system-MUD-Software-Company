@@ -215,6 +215,58 @@ fn resolve_backup_path(conn: &Connection, stored_path: &str) -> PathBuf {
     stored
 }
 
+
+/// Read and decrypt a completed backup for secure LAN transport. The LAN layer
+/// re-encrypts the database with the receiving installation's own backup key.
+pub fn read_lan_payload(conn: &Connection, id: i64) -> Result<(Vec<u8>, String, String, String), String> {
+    verify_backup(conn, id)?;
+    let (stored_path, status) = record(conn, id)?;
+    if status != "completed" { return Err("Backup is not completed.".into()); }
+    let path = resolve_backup_path(conn, &stored_path);
+    let payload = payload_from_file(&path)?;
+    let filename = path.file_name().and_then(|v| v.to_str()).unwrap_or("payroll_backup.pbak").to_string();
+    Ok((payload, filename, database_version(conn), app_version(conn)))
+}
+
+/// Validate an incoming SQLite payload and store it as a new backup encrypted
+/// with the receiving installation's local backup key.
+pub fn store_lan_received_payload(
+    conn: &Connection,
+    backup_dir: &Path,
+    filename: &str,
+    payload: &[u8],
+    database_version_value: &str,
+    app_version_value: &str,
+) -> Result<(i64, String, u64, String), String> {
+    let _guard = acquire_backup_lock()?;
+    validate_database_bytes(payload)?;
+    fs::create_dir_all(backup_dir).map_err(|e| format!("Unable to create backup folder: {e}"))?;
+    let safe_name = Path::new(filename).file_name().and_then(|v| v.to_str()).unwrap_or("received-backup")
+        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_', "_");
+    let final_path = backup_dir.join(format!("payroll_backup_lan_received_{}_{}.pbak", now_id(), safe_name));
+    let compressed = compress(payload)?;
+    let encrypted = encrypt(&compressed)?;
+    let mut file = fs::File::create(&final_path).map_err(|e| format!("Unable to create received backup: {e}"))?;
+    file.write_all(&encrypted).map_err(|e| format!("Unable to write received backup: {e}"))?;
+    file.sync_all().map_err(|e| format!("Unable to finalize received backup: {e}"))?;
+    let size = encrypted.len() as u64;
+    let sum = checksum(&encrypted);
+    conn.execute(
+        "INSERT INTO backups (file_path,file_size,backup_type,status,checksum,encrypted,database_version,app_version) VALUES (?1,?2,'lan_received','completed',?3,1,?4,?5)",
+        params![final_path.to_string_lossy().to_string(), size as i64, sum, database_version_value, app_version_value],
+    ).map_err(|e| { let _ = fs::remove_file(&final_path); format!("Unable to record received backup: {e}") })?;
+    let id = conn.last_insert_rowid();
+    Ok((id, final_path.to_string_lossy().to_string(), size, sum))
+}
+
+fn validate_database_bytes(payload: &[u8]) -> Result<(), String> {
+    let temp = app_dir().join(format!("lan_validate_{}.sqlite", now_id()));
+    fs::write(&temp, payload).map_err(|e| format!("Unable to prepare received backup validation: {e}"))?;
+    let result = validate_database_file(&temp);
+    let _ = fs::remove_file(&temp);
+    result
+}
+
 pub fn verify_backup(conn: &Connection, id: i64) -> Result<(), String> {
     let _guard = acquire_backup_lock()?;
     let (stored_path, _) = record(conn, id)?;

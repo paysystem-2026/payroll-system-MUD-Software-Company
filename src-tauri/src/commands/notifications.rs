@@ -1,6 +1,6 @@
 use crate::database::connection::Database;
 use crate::security::session;
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
 

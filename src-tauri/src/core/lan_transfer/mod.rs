@@ -229,6 +229,7 @@ fn receive_transfer(stream: &mut TcpStream, db_path: &std::path::Path) -> Result
     let mut base=[0u8;12]; base.copy_from_slice(&base_vec);
     let auth=header.get("auth").and_then(|v|v.as_str()).ok_or("Missing transfer authentication")?;
     let version=header.get("version").and_then(|v|v.as_str()).ok_or("Missing sender version")?;
+    let database_version=header.get("database_version").and_then(|v|v.as_str()).unwrap_or("unknown");
     if !compatible_version(version) { return Err("Sender is running an incompatible Payroll System version".into()); }
     let conn=Connection::open(db_path).map_err(|e|e.to_string())?;
     let (local_id,_)=ensure_identity(&conn)?;
@@ -240,12 +241,9 @@ fn receive_transfer(stream: &mut TcpStream, db_path: &std::path::Path) -> Result
     stream.set_read_timeout(Some(TRANSFER_TIMEOUT)).map_err(|e| format!("Unable to configure transfer timeout: {e}"))?;
     stream.set_write_timeout(Some(TRANSFER_TIMEOUT)).map_err(|e| format!("Unable to configure transfer timeout: {e}"))?;
     let safe_name=std::path::Path::new(filename).file_name().and_then(|v|v.to_str()).unwrap_or("received-backup").replace(|c:char| !c.is_ascii_alphanumeric() && c!='.' && c!='-' && c!='_', "_");
-    let (_, _, _, _, configured_location)=crate::core::backup::backup_settings(&conn); let out_dir=std::path::PathBuf::from(configured_location); std::fs::create_dir_all(&out_dir).map_err(|e|e.to_string())?;
-    let temp=out_dir.join(format!(".lan-{}-{}.part", transfer_id, safe_name));
-    let final_path=out_dir.join(format!("lan_received_{}_{}", transfer_id, safe_name));
-    if final_path.exists() { return Err("This transfer was already received".into()); }
+    let device_row: Option<i64>=conn.query_row("SELECT id FROM devices WHERE device_id=?1",params![sender],|r|r.get(0)).ok();
+    let mut payload=Vec::with_capacity(size.min(16*1024*1024) as usize);
     let receive_result: Result<(), String> = (|| {
-        let mut file=std::fs::File::create(&temp).map_err(|e|e.to_string())?;
         let cipher=Aes256Gcm::new_from_slice(&secret).map_err(|_|"Unable to initialize transfer encryption".to_string())?;
         let mut received=0u64; let mut index=0u32; let mut hasher=Sha256::new();
         while received<size {
@@ -256,34 +254,34 @@ fn receive_transfer(stream: &mut TcpStream, db_path: &std::path::Path) -> Result
             stream.read_exact(&mut enc).map_err(|_|"Transfer interrupted".to_string())?;
             let plain=cipher.decrypt(Nonce::from_slice(&chunk_nonce(&base,index)),enc.as_ref()).map_err(|_|"Transfer integrity check failed".to_string())?;
             if received + plain.len() as u64 > size { return Err("Transfer size mismatch".into()); }
-            file.write_all(&plain).map_err(|e|e.to_string())?;
-            hasher.update(&plain); received+=plain.len() as u64; index=index.wrapping_add(1);
+            hasher.update(&plain); payload.extend_from_slice(&plain); received+=plain.len() as u64; index=index.wrapping_add(1);
         }
         if received != size { return Err("Transfer size mismatch".into()); }
-        file.sync_all().map_err(|e|e.to_string())?;
         let got=format!("{:x}",hasher.finalize());
         if got!=checksum { return Err("Transfer checksum verification failed".into()); }
         Ok(())
     })();
-    if let Err(e)=receive_result { let _=std::fs::remove_file(&temp); return Err(e); }
-    std::fs::rename(&temp,&final_path).map_err(|e|e.to_string())?;
-    let file_size=std::fs::metadata(&final_path).map(|m|m.len() as i64).unwrap_or(size as i64);
-    let device_row: Option<i64>=conn.query_row("SELECT id FROM devices WHERE device_id=?1",params![sender],|r|r.get(0)).ok();
-    conn.execute("INSERT INTO backups(file_path,file_size,backup_type,status,created_at,checksum,encrypted,database_version,app_version) VALUES(?1,?2,'lan_received','received',datetime('now'),?3,1,'unknown',?4)",params![final_path.to_string_lossy().to_string(),file_size,checksum,header.get("version").and_then(|v|v.as_str()).unwrap_or("unknown")]).map_err(|e|e.to_string())?;
-    let received_id: i64=conn.query_row("SELECT id FROM backups WHERE file_path=?1 ORDER BY id DESC LIMIT 1", params![final_path.to_string_lossy().to_string()], |r| r.get(0)).map_err(|e|e.to_string())?;
-    if let Err(e)=crate::core::backup::verify_backup(&conn, received_id) {
-        let _=conn.execute("DELETE FROM backups WHERE id=?1",params![received_id]);
-        let _=std::fs::remove_file(&final_path);
-        let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) VALUES(?1,'received',?2,?3,'failed')",params![device_row,safe_name,file_size]);
-        return Err(format!("Received backup failed validation: {e}"));
+    if let Err(e)=receive_result {
+        let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) VALUES(?1,'received',?2,?3,'failed')",params![device_row,safe_name,size as i64]);
+        return Err(e);
     }
-    conn.execute("UPDATE backups SET status='completed' WHERE id=?1",params![received_id]).map_err(|e|e.to_string())?;
+    let (_, _, _, _, configured_location)=crate::core::backup::backup_settings(&conn);
+    let out_dir=std::path::PathBuf::from(configured_location);
+    let stored = crate::core::backup::store_lan_received_payload(&conn,&out_dir,&safe_name,&payload,database_version,version);
+    let (received_id, final_path, file_size, _stored_checksum) = match stored {
+        Ok(v)=>v,
+        Err(e)=>{
+            let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) VALUES(?1,'received',?2,?3,'failed')",params![device_row,safe_name,size as i64]);
+            return Err(format!("Received backup failed validation: {e}"));
+        }
+    };
     conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) VALUES(?1,'received',?2,?3,'success')",params![device_row,safe_name,file_size]).map_err(|e|e.to_string())?;
-    crate::security::audit::log(&conn, "lan_backup_received", Some("backups"), Some(received_id), Some("Encrypted LAN backup received, checksum verified and backup format validated"));
-    let ack=serde_json::json!({"success":true,"transfer_id":transfer_id,"message":"Backup received, authenticated and checksum verified."});
+    crate::security::audit::log(&conn, "lan_backup_received", Some("backups"), Some(received_id), Some("Encrypted LAN backup received, transport checksum verified, database validated and re-encrypted for this installation"));
+    let ack=serde_json::json!({"success":true,"transfer_id":transfer_id,"message":"Backup received, validated and securely stored with this installation's backup encryption key."});
     let bytes=serde_json::to_vec(&ack).map_err(|e|e.to_string())?;
     stream.write_all(&(bytes.len() as u32).to_be_bytes()).map_err(|e|e.to_string())?;
     stream.write_all(&bytes).map_err(|e|e.to_string())?;
+    let _=final_path;
     Ok(())
 }
 
@@ -291,38 +289,32 @@ pub fn send_backup(conn: &Connection, local_id: &str, device_id: &str, backup_id
     let (ip,stored): (String,String)=conn.query_row("SELECT COALESCE(ip_address,''),COALESCE(pairing_code,'') FROM devices WHERE device_id=?1 AND status='paired'",params![device_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|"Device is not paired or no longer trusted".to_string())?;
     if ip.is_empty(){return Err("Trusted device has no reachable LAN address".into());}
     let secret=decrypt_secret(&stored)?;
-    crate::core::backup::verify_backup(conn, backup_id)?;
-    let path:String=conn.query_row("SELECT file_path FROM backups WHERE id=?1 AND status='completed'",params![backup_id],|r|r.get(0)).map_err(|_|"Backup not found".to_string())?;
-    let meta=std::fs::metadata(&path).map_err(|_|"Backup file is missing".to_string())?; let size=meta.len(); if size>MAX_TRANSFER_SIZE{return Err("Backup exceeds the 512 MB transfer limit".into());}
-    let filename=std::path::Path::new(&path).file_name().and_then(|v|v.to_str()).unwrap_or("backup").to_string();
-    let data=std::fs::read(&path).map_err(|e|e.to_string())?; let checksum=format!("{:x}",Sha256::digest(&data)); let transfer_id=Uuid::new_v4().to_string(); let nonce=transfer_nonce();
+    let (data,filename,_database_version,source_version)=crate::core::backup::read_lan_payload(conn, backup_id)?;
+    let size=data.len() as u64; if size>MAX_TRANSFER_SIZE{return Err("Backup exceeds the 512 MB transfer limit".into());}
+    let checksum=format!("{:x}",Sha256::digest(&data)); let transfer_id=Uuid::new_v4().to_string(); let nonce=transfer_nonce();
     let auth=transfer_tag(&secret,&transfer_id,local_id,&filename,size,&checksum);
-    let header=serde_json::json!({"sender_id":local_id,"filename":filename,"size":size,"sha256":checksum,"transfer_id":transfer_id,"nonce":STANDARD.encode(nonce),"auth":auth,"version":APP_VERSION});
+    let database_version=conn.query_row("SELECT COALESCE(database_version,'unknown') FROM backups WHERE id=?1",params![backup_id],|r|r.get::<_,String>(0)).unwrap_or_else(|_|"unknown".into());
+    let header=serde_json::json!({"sender_id":local_id,"filename":filename,"size":size,"sha256":checksum,"transfer_id":transfer_id,"nonce":STANDARD.encode(nonce),"auth":auth,"version":source_version,"database_version":database_version,"payload_format":"sqlite"});
     let address: std::net::SocketAddr = format!("{}:{}", ip, TRANSFER_PORT).parse().map_err(|_|"Invalid trusted device address".to_string())?;
-    let mut stream=TcpStream::connect_timeout(&address, TRANSFER_TIMEOUT).map_err(|e|format!("Unable to connect to trusted device: {e}"))?;
-    stream.set_write_timeout(Some(TRANSFER_TIMEOUT)).ok();
-    stream.set_read_timeout(Some(TRANSFER_TIMEOUT)).ok();
-    let hb=serde_json::to_vec(&header).map_err(|e|e.to_string())?; stream.write_all(&(hb.len() as u32).to_be_bytes()).map_err(|e|e.to_string())?; stream.write_all(&hb).map_err(|e|e.to_string())?;
-    let cipher=Aes256Gcm::new_from_slice(&secret).map_err(|_|"Unable to initialize transfer encryption".to_string())?; for (i,chunk) in data.chunks(1024*1024).enumerate(){let enc=cipher.encrypt(Nonce::from_slice(&chunk_nonce(&nonce,i as u32)),chunk).map_err(|_|"Unable to encrypt transfer".to_string())?; stream.write_all(&(enc.len() as u32).to_be_bytes()).map_err(|e|e.to_string())?; stream.write_all(&enc).map_err(|e|e.to_string())?;}
-    let mut ack_len=[0u8;4];
-    if stream.read_exact(&mut ack_len).is_err() {
-        let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) SELECT id,'sent',?2,?3,'failed' FROM devices WHERE device_id=?1",params![device_id,filename,size as i64]);
-        return Err("Transfer completed locally but the receiving device did not confirm it. Check the receiver's transfer history.".into());
-    }
-    let ack_len=u32::from_be_bytes(ack_len) as usize; if ack_len==0 || ack_len>4096 { return Err("Invalid transfer confirmation".into()); }
-    let mut ack_buf=vec![0u8;ack_len];
-    if stream.read_exact(&mut ack_buf).is_err() {
-        let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) SELECT id,'sent',?2,?3,'failed' FROM devices WHERE device_id=?1",params![device_id,filename,size as i64]);
-        return Err("Receiving device closed the connection before confirming the transfer".into());
-    }
-    let ack: serde_json::Value=serde_json::from_slice(&ack_buf).map_err(|_|"Invalid transfer confirmation".to_string())?;
-    let ok=ack.get("success").and_then(|v|v.as_bool()).unwrap_or(false);
-    let ack_id=ack.get("transfer_id").and_then(|v|v.as_str()).unwrap_or("");
-    if ack_id!=transfer_id { return Err("Transfer confirmation does not match this transfer".into()); }
-    let status=if ok {"success"} else {"failed"};
-    let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) SELECT id,'sent',?2,?3,?4 FROM devices WHERE device_id=?1",params![device_id,filename,size as i64,status]);
-    if !ok { return Err(ack.get("message").and_then(|v|v.as_str()).unwrap_or("Receiving device rejected the transfer").to_string()); }
-    Ok(())
+    let result: Result<(), String> = (|| {
+        let mut stream=TcpStream::connect_timeout(&address, TRANSFER_TIMEOUT).map_err(|e|format!("Unable to connect to trusted device: {e}"))?;
+        stream.set_write_timeout(Some(TRANSFER_TIMEOUT)).map_err(|e|e.to_string())?;
+        stream.set_read_timeout(Some(TRANSFER_TIMEOUT)).map_err(|e|e.to_string())?;
+        let hb=serde_json::to_vec(&header).map_err(|e|e.to_string())?; stream.write_all(&(hb.len() as u32).to_be_bytes()).map_err(|e|e.to_string())?; stream.write_all(&hb).map_err(|e|e.to_string())?;
+        let cipher=Aes256Gcm::new_from_slice(&secret).map_err(|_|"Unable to initialize transfer encryption".to_string())?;
+        for (i,chunk) in data.chunks(1024*1024).enumerate(){let enc=cipher.encrypt(Nonce::from_slice(&chunk_nonce(&nonce,i as u32)),chunk).map_err(|_|"Unable to encrypt transfer".to_string())?; stream.write_all(&(enc.len() as u32).to_be_bytes()).map_err(|e|e.to_string())?; stream.write_all(&enc).map_err(|e|e.to_string())?;}
+        let mut ack_len=[0u8;4]; stream.read_exact(&mut ack_len).map_err(|_|"Transfer completed locally but the receiving device did not confirm it. Check the receiver's transfer history.".to_string())?;
+        let ack_len=u32::from_be_bytes(ack_len) as usize; if ack_len==0 || ack_len>4096 { return Err("Invalid transfer confirmation".into()); }
+        let mut ack_buf=vec![0u8;ack_len]; stream.read_exact(&mut ack_buf).map_err(|_| String::from("Receiving device closed the connection before confirming the transfer"))?;
+        let ack: serde_json::Value=serde_json::from_slice(&ack_buf).map_err(|_|"Invalid transfer confirmation".to_string())?;
+        let ok=ack.get("success").and_then(|v|v.as_bool()).unwrap_or(false); let ack_id=ack.get("transfer_id").and_then(|v|v.as_str()).unwrap_or("");
+        if ack_id!=transfer_id { return Err("Transfer confirmation does not match this transfer".into()); }
+        if !ok { return Err(ack.get("message").and_then(|v|v.as_str()).unwrap_or("Receiving device rejected the transfer").to_string()); }
+        Ok(())
+    })();
+    let status=if result.is_ok(){"success"}else{"failed"};
+    let _=conn.execute("INSERT INTO transfer_history(device_id,direction,file_name,file_size,status) SELECT id,'sent',?2,?3,?4 FROM devices WHERE device_id=?1",params![device_id.to_string(),filename,size as i64,status]);
+    result
 }
 
 fn local_ipv4() -> Option<Ipv4Addr> {
